@@ -297,11 +297,18 @@ def recover(plan: Plan) -> list[str]:
     return changed
 
 
-def verify(plan: Plan, run_id: str) -> list[str]:
+def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list[str]:
     if len(run_id) != 32 or any(char not in "0123456789abcdef" for char in run_id):
         raise StorageError("Invalid run ID")
+    if run_id in _seen:
+        return [f"Resume source cycle includes {run_id}"]
+    if len(_seen) >= 64:
+        return ["Resume source chain exceeds 64 runs"]
+    _seen = _seen | {run_id}
     store = Store(plan.root / ".reproforge")
     path = store.runs / f"{run_id}.json"
+    if path.is_symlink():
+        raise StorageError(f"Run ledger is a symbolic link: {run_id}")
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -446,6 +453,9 @@ def verify(plan: Plan, run_id: str) -> list[str]:
                         or any(source_entry.get(field) != entry.get(field)
                                for field in ("inputs", "outputs", "stdout", "stderr"))):
                     issues.append(f"{task.id}: resumed artifacts differ from source run")
+                else:
+                    for source_issue in verify(plan, source_id, _seen):
+                        issues.append(f"{task.id}: resume source: {source_issue}")
         previous[task.id] = entry
     if record.get("status") == "success" and len(record["tasks"]) != len(plan.tasks):
         issues.append("Successful run does not contain every task")

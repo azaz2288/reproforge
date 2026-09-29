@@ -137,6 +137,18 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(StorageError, "Cannot resume run"):
                 execute(plan, resume=failed["run_id"])
 
+    def test_repeated_resume_preserves_source_chain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = task("first", "from pathlib import Path; Path('one.txt').write_text('ok')", outputs=["one.txt"])
+            second = task("second", "import sys; sys.exit(7)", outputs=[])
+            plan = load_plan(project(root, [first, second]))
+            failed = execute(plan)
+            again = execute(plan, resume=failed["run_id"])
+            third = execute(plan, resume=again["run_id"])
+            self.assertEqual(third["tasks"][0]["resumed_from"], again["run_id"])
+            self.assertEqual(verify(plan, third["run_id"]), [])
+
     def test_iris_case_pipeline_with_offline_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
