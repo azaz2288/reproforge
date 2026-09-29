@@ -1,4 +1,5 @@
 import copy
+import http.client
 import json
 import subprocess
 import sys
@@ -6,9 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from reproforge.runner import _cache_key, execute, verify
+from reproforge.locking import project_lock
+from reproforge.dashboard import make_server, render
+from reproforge.runner import _cache_key, execute, recover, verify
 from reproforge.spec import SpecError, load_plan
-from reproforge.storage import Store
+from reproforge.storage import Store, StorageError
 
 
 def project(root: Path, tasks: list[dict]) -> Path:
@@ -24,6 +27,18 @@ def task(task_id: str, script: str, inputs: list[dict] | None = None,
 
 
 class SpecificationTests(unittest.TestCase):
+    def test_rejects_invalid_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = {"id": "quality", "inputs": [{"project": "data.csv", "as": "data.csv"}],
+                        "gate": {"type": "csv_quality", "input": "missing.csv"}}
+            with self.assertRaisesRegex(SpecError, "declared input"):
+                load_plan(project(root, [selected]))
+            selected["gate"]["input"] = "data.csv"
+            selected["gate"]["max_null_fraction"] = 2
+            with self.assertRaisesRegex(SpecError, "thresholds"):
+                load_plan(project(root, [selected]))
+
     def test_topological_order_and_artifact_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -68,6 +83,119 @@ class SpecificationTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_recover_marks_only_abandoned_matching_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = load_plan(project(root, [task("one", "pass")]))
+            run_id = "a" * 32
+            store = Store(root / ".reproforge")
+            store.runs.mkdir(parents=True)
+            ledger = store.runs / f"{run_id}.json"
+            ledger.write_text(json.dumps({"version": 1, "run_id": run_id, "status": "running",
+                "plan_sha256": __import__("hashlib").sha256(plan.raw_bytes).hexdigest(),
+                "environment": {}, "tasks": []}), encoding="utf-8")
+            self.assertEqual(recover(plan), [run_id])
+            self.assertEqual(recover(plan), [])
+            self.assertEqual(verify(plan, run_id), [])
+
+    def test_dashboard_is_read_only_and_escapes_ledger_text(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = load_plan(project(root, [task("one", "from pathlib import Path; Path('result.txt').write_text('ok')")]))
+            run = execute(plan)
+            ledger = Store(root / ".reproforge").runs / f"{run['run_id']}.json"
+            changed = json.loads(ledger.read_text(encoding="utf-8"))
+            changed["tasks"][0]["error"] = "<script>alert(1)</script>"
+            ledger.write_text(json.dumps(changed), encoding="utf-8")
+            page = render(plan, run["run_id"])
+            self.assertIn("&lt;script&gt;", page)
+            self.assertNotIn("<script>", page)
+            server = make_server(plan, 0)
+            import threading
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertIn("Content-Security-Policy", response.headers)
+                response.read()
+                connection.request("POST", "/")
+                self.assertEqual(connection.getresponse().status, 405)
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_project_lock_serializes_processes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = ("import sys,time; from pathlib import Path; "
+                      "from reproforge.locking import project_lock; "
+                      "lock=project_lock(Path(sys.argv[1])); "
+                      "lock.__enter__(); print('locked',flush=True); time.sleep(1); lock.__exit__(None,None,None)")
+            holder = subprocess.Popen([sys.executable, "-c", script, str(root / ".reproforge")],
+                                      stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(holder.stdout.readline().strip(), "locked")
+                with self.assertRaisesRegex(StorageError, "Timed out waiting"):
+                    with project_lock(root / ".reproforge", timeout=0.1):
+                        pass
+            finally:
+                holder.wait(timeout=5)
+                holder.stdout.close()
+            with project_lock(root / ".reproforge", timeout=0.1):
+                pass
+
+    def test_csv_gate_blocks_downstream_and_verifies_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "data.csv").write_text("id,value\n1,ok\n1,\n", encoding="utf-8")
+            gate = {"id": "quality", "inputs": [{"project": "data.csv", "as": "data.csv"}],
+                    "gate": {"type": "csv_quality", "input": "data.csv", "required_columns": ["id", "value"],
+                             "min_rows": 2, "max_null_fraction": 0.0, "unique_by": ["id"]}}
+            downstream = task("publish", "from pathlib import Path; Path('result.txt').write_text('published')",
+                              [{"task": "quality", "artifact": "gate-report.json", "as": "gate-report.json"}])
+            plan = load_plan(project(root, [downstream, gate]))
+            result = execute(plan)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(len(result["tasks"]), 1)
+            self.assertIn("duplicate unique keys", result["tasks"][0]["error"])
+            self.assertEqual(verify(plan, result["run_id"]), [])
+            report_ref = result["tasks"][0]["outputs"]["gate-report.json"]
+            report_path = Store(root / ".reproforge").object_path(report_ref["sha256"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertFalse(report["passed"])
+            report["passed"] = True
+            forged = root / "forged.json"
+            forged.write_text(json.dumps(report), encoding="utf-8")
+            forged_ref = Store(root / ".reproforge").put(forged)
+            ledger = Store(root / ".reproforge").runs / f"{result['run_id']}.json"
+            changed = json.loads(ledger.read_text(encoding="utf-8"))
+            changed["tasks"][0]["outputs"]["gate-report.json"] = forged_ref
+            ledger.write_text(json.dumps(changed), encoding="utf-8")
+            self.assertTrue(any("gate report differs" in issue for issue in verify(plan, result["run_id"])))
+
+    def test_temporal_gate_catches_leakage_and_passes_ordered_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "splits.csv"
+            selected = {"id": "timecheck", "inputs": [{"project": "splits.csv", "as": "splits.csv"}],
+                        "gate": {"type": "time_split", "input": "splits.csv", "timestamp_column": "date",
+                                 "split_column": "split", "train_label": "train", "test_label": "test"}}
+            plan = load_plan(project(root, [selected]))
+            source.write_text("date,split\n2025-02-01,train\n2025-01-01,test\n", encoding="utf-8")
+            failed = execute(plan)
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("Temporal leakage", failed["tasks"][0]["error"])
+            self.assertEqual(verify(plan, failed["run_id"]), [])
+            source.write_text("date,split\n2025-01-01,train\n2025-02-01,test\n", encoding="utf-8")
+            passed = execute(plan)
+            self.assertEqual(passed["status"], "success")
+            self.assertEqual(verify(plan, passed["run_id"]), [])
+
     def test_multistep_run_and_independent_verify(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

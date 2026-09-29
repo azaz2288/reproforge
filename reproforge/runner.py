@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .gates import evaluate
+from .locking import project_lock
 from .spec import Plan, SpecError, Task
 from .storage import Store, StorageError, atomic_json
 
@@ -147,6 +149,21 @@ def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[st
 
         stdout_path = root / "stdout.log"
         stderr_path = root / "stderr.log"
+        if task.gate is not None:
+            report = evaluate(task.gate, workspace)
+            report_path = workspace / "gate-report.json"
+            atomic_json(report_path, report)
+            stdout_path.write_bytes(b"")
+            stderr_path.write_bytes(b"")
+            entry["stdout"] = _log_record(store, stdout_path)
+            entry["stderr"] = _log_record(store, stderr_path)
+            entry["outputs"]["gate-report.json"] = store.put(report_path)
+            entry["status"] = "success" if report["passed"] else "failed"
+            entry["returncode"] = 0 if report["passed"] else 1
+            if not report["passed"]:
+                entry["error"] = "; ".join(report["violations"])
+            entry["finished_at"] = _now()
+            return entry
         command = [sys.executable if index == 0 and word == "@python" else word
                    for index, word in enumerate(task.command)]
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
@@ -185,6 +202,11 @@ def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[st
 
 def execute(plan: Plan, reuse: bool = False) -> dict[str, Any]:
     store = Store(plan.root / ".reproforge")
+    with project_lock(store.root):
+        return _execute_locked(plan, store, reuse)
+
+
+def _execute_locked(plan: Plan, store: Store, reuse: bool) -> dict[str, Any]:
     run_id = uuid.uuid4().hex
     environment = {"python": sys.version.split()[0], "platform": platform.platform(),
                    "executable": str(Path(sys.executable).resolve())}
@@ -223,6 +245,32 @@ def execute(plan: Plan, reuse: bool = False) -> dict[str, Any]:
     return record
 
 
+def recover(plan: Plan) -> list[str]:
+    """Mark abandoned running ledgers interrupted while holding the writer lock."""
+    store = Store(plan.root / ".reproforge")
+    changed = []
+    with project_lock(store.root):
+        if not store.runs.is_dir():
+            return changed
+        for path in store.runs.glob("*.json"):
+            if path.is_symlink() or len(path.stem) != 32 or any(char not in "0123456789abcdef" for char in path.stem):
+                continue
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if (not isinstance(record, dict) or record.get("run_id") != path.stem
+                    or record.get("plan_sha256") != hashlib.sha256(plan.raw_bytes).hexdigest()
+                    or record.get("status") != "running"):
+                continue
+            record["status"] = "interrupted"
+            record["finished_at"] = _now()
+            record["recovery_note"] = "A prior process stopped before the run completed; no task was resumed."
+            atomic_json(path, record)
+            changed.append(path.stem)
+    return changed
+
+
 def verify(plan: Plan, run_id: str) -> list[str]:
     if len(run_id) != 32 or any(char not in "0123456789abcdef" for char in run_id):
         raise StorageError("Invalid run ID")
@@ -237,7 +285,7 @@ def verify(plan: Plan, run_id: str) -> list[str]:
     issues = []
     if record.get("plan_sha256") != hashlib.sha256(plan.raw_bytes).hexdigest():
         issues.append("Current project specification differs from the recorded run")
-    if record.get("status") not in ("success", "failed", "running"):
+    if record.get("status") not in ("success", "failed", "running", "interrupted"):
         issues.append("Invalid run status")
     previous: dict[str, dict[str, Any]] = {}
     environment = record.get("environment")
@@ -261,6 +309,10 @@ def verify(plan: Plan, run_id: str) -> list[str]:
             raise StorageError(f"Malformed references in task {task.id}")
         if entry.get("status") == "success" and set(outputs) != set(task.outputs):
             issues.append(f"{task.id}: declared outputs differ from run record")
+        if task.gate is not None and "returncode" in entry and set(outputs) != {"gate-report.json"}:
+            issues.append(f"{task.id}: gate report is missing")
+        if task.gate is not None and "returncode" in entry and entry.get("returncode") != (0 if entry.get("status") == "success" else 1):
+            issues.append(f"{task.id}: gate exit status mismatch")
         if entry.get("status") == "success" and len(inputs) != len(task.inputs):
             issues.append(f"{task.id}: input count differs from plan")
         if task.cache and len(inputs) == len(task.inputs):
@@ -286,6 +338,22 @@ def verify(plan: Plan, run_id: str) -> list[str]:
             if output_name not in task.outputs:
                 issues.append(f"{task.id}: undeclared output {output_name}")
             issues.extend(store.check(reference))
+        if task.gate is not None and len(inputs) == 1 and "gate-report.json" in outputs:
+            report_ref = outputs["gate-report.json"]
+            if not store.check(report_ref) and not store.check(inputs[0].get("object")):
+                with tempfile.TemporaryDirectory(prefix="verify-gate-") as temporary:
+                    gate_workspace = Path(temporary)
+                    gate_input = _within(gate_workspace, task.gate["input"], "Gate input")
+                    store.materialize(inputs[0]["object"], gate_input)
+                    expected = evaluate(task.gate, gate_workspace)
+                try:
+                    actual = json.loads(store.object_path(report_ref["sha256"]).read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise StorageError(f"Cannot read gate report for {task.id}: {exc}") from exc
+                if actual != expected:
+                    issues.append(f"{task.id}: gate report differs from independently evaluated input")
+                if (entry.get("status") == "success") != expected["passed"]:
+                    issues.append(f"{task.id}: gate status differs from report")
         for stream in ("stdout", "stderr"):
             if stream in entry:
                 reference = entry[stream]
@@ -341,4 +409,6 @@ def verify(plan: Plan, run_id: str) -> list[str]:
         issues.append("Running record has a finish time")
     if record.get("status") == "running":
         issues.append("Run is incomplete and cannot be verified as finished")
+    if record.get("status") == "interrupted" and "finished_at" not in record:
+        issues.append("Interrupted run is missing its recovery time")
     return issues

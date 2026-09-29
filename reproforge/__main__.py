@@ -7,7 +7,8 @@ import hashlib
 import sys
 from pathlib import Path
 
-from .runner import execute, verify
+from .dashboard import make_server
+from .runner import execute, recover, verify
 from .spec import SpecError, load_plan
 from .storage import StorageError
 
@@ -15,13 +16,15 @@ from .storage import StorageError
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run and verify local-first file pipelines")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("validate", "run", "verify"):
+    for name in ("validate", "run", "verify", "recover", "serve"):
         command = commands.add_parser(name)
         command.add_argument("project", type=Path, help="path to a version-1 project JSON specification")
         if name == "run":
             command.add_argument("--reuse", action="store_true", help="reuse verified outputs of tasks that explicitly declare cache=true")
         if name == "verify":
             command.add_argument("run_id")
+        if name == "serve":
+            command.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
     try:
         plan = load_plan(args.project)
@@ -40,6 +43,19 @@ def main(argv: list[str] | None = None) -> int:
                 if task.get("error"):
                     print(f"    {task['error']}")
             return 0 if record["status"] == "success" else 1
+        if args.command == "serve":
+            if not 0 <= args.port <= 65535:
+                parser.error("--port must be from 0 to 65535")
+            with make_server(plan, args.port) as server:
+                print(f"Read-only dashboard: http://127.0.0.1:{server.server_port}/", flush=True)
+                server.serve_forever()
+            return 0
+        if args.command == "recover":
+            recovered = recover(plan)
+            print(f"Marked {len(recovered)} abandoned run(s) interrupted")
+            for run_id in recovered:
+                print(f"  {run_id}")
+            return 0
         issues = verify(plan, args.run_id)
         if issues:
             for issue in issues:

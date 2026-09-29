@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "report",
+      "command": ["@python", "report.py"],
+      "inputs": [
+        {"task": "quality", "artifact": "gate-report.json", "as": "quality.json"},
+        {"task": "timecheck", "artifact": "gate-report.json", "as": "time.json"},
+        {"project": "scripts/report.py", "as": "report.py"}
+      ],
+      "outputs": ["report.md"]
+    },
+    {
+      "id": "quality",
+      "inputs": [{"project": "data/events.csv", "as": "events.csv"}],
+      "gate": {"type": "csv_quality", "input": "events.csv", "required_columns": ["event_id", "date", "split", "value"], "min_rows": 4, "max_null_fraction": 0, "unique_by": ["event_id"]}
+    },
+    {
+      "id": "timecheck",
+      "inputs": [{"project": "data/events.csv", "as": "events.csv"}],
+      "gate": {"type": "time_split", "input": "events.csv", "timestamp_column": "date", "split_column": "split", "train_label": "train", "test_label": "test"}
+    }
+  ]
+}

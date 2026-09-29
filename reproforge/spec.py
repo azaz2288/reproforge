@@ -44,6 +44,7 @@ class Task:
     depends_on: tuple[str, ...]
     timeout_seconds: int
     cache: bool
+    gate: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -66,16 +67,52 @@ def _overlap(paths: tuple[str, ...] | set[str]) -> bool:
                for path in names for index in range(1, len(path.split("/"))))
 
 
+def _gate(value: Any, task_id: str, destinations: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("type") not in ("csv_quality", "time_split"):
+        raise SpecError(f"{task_id}.gate.type must be csv_quality or time_split")
+    kind = value["type"]
+    allowed = ({"type", "input", "required_columns", "min_rows", "max_null_fraction", "unique_by"}
+               if kind == "csv_quality" else
+               {"type", "input", "timestamp_column", "split_column", "train_label", "test_label"})
+    if set(value) - allowed:
+        raise SpecError(f"{task_id}.gate has unknown fields")
+    if not isinstance(value.get("input"), str) or value["input"] not in destinations:
+        raise SpecError(f"{task_id}.gate.input must name a declared input destination")
+    if kind == "csv_quality":
+        columns = value.get("required_columns", [])
+        unique = value.get("unique_by", [])
+        if (not isinstance(columns, list) or not isinstance(unique, list)
+                or any(not isinstance(item, str) or not item for item in columns + unique)
+                or len(set(columns)) != len(columns) or len(set(unique)) != len(unique)):
+            raise SpecError(f"{task_id}.gate columns must be unique nonempty strings")
+        min_rows = value.get("min_rows", 1)
+        null_fraction = value.get("max_null_fraction", 1.0)
+        if type(min_rows) is not int or min_rows < 0 or type(null_fraction) not in (int, float) or not 0 <= null_fraction <= 1:
+            raise SpecError(f"{task_id}.gate thresholds are invalid")
+    else:
+        for field in ("timestamp_column", "split_column", "train_label", "test_label"):
+            if not isinstance(value.get(field), str) or not value[field]:
+                raise SpecError(f"{task_id}.gate.{field} must be a nonempty string")
+        if value["train_label"] == value["test_label"]:
+            raise SpecError(f"{task_id}.gate labels must differ")
+    return value
+
+
 def _task(value: Any, number: int) -> Task:
     label = f"tasks[{number}]"
-    if not isinstance(value, dict) or set(value) - {"id", "command", "inputs", "outputs", "depends_on", "timeout_seconds", "cache"}:
+    if not isinstance(value, dict) or set(value) - {"id", "command", "inputs", "outputs", "depends_on", "timeout_seconds", "cache", "gate"}:
         raise SpecError(f"{label} is not a task object or has unknown fields")
     task_id = value.get("id")
     if not isinstance(task_id, str) or not ID_PATTERN.fullmatch(task_id):
         raise SpecError(f"{label}.id must match [a-z][a-z0-9_-]*")
-    command = _list(value.get("command"), f"{task_id}.command")
-    if not command or any(not isinstance(word, str) or not word for word in command):
-        raise SpecError(f"{task_id}.command must contain nonempty argument strings")
+    if "gate" in value:
+        if "command" in value:
+            raise SpecError(f"{task_id}: gate tasks cannot also declare command")
+        command = ["@gate"]
+    else:
+        command = _list(value.get("command"), f"{task_id}.command")
+        if not command or any(not isinstance(word, str) or not word for word in command):
+            raise SpecError(f"{task_id}.command must contain nonempty argument strings")
     raw_inputs = _list(value.get("inputs", []), f"{task_id}.inputs")
     inputs = []
     destinations = set()
@@ -99,7 +136,11 @@ def _task(value: Any, number: int) -> Task:
             raise SpecError(f"{item_label} must name either project+as or task+artifact+as")
     if _overlap(destinations):
         raise SpecError(f"{task_id}: input destinations overlap")
+    if "gate" in value and "outputs" not in value:
+        value = {**value, "outputs": ["gate-report.json"]}
     outputs = tuple(relative_path(item, f"{task_id}.outputs") for item in _list(value.get("outputs", []), f"{task_id}.outputs"))
+    if "gate" in value and outputs != ("gate-report.json",):
+        raise SpecError(f"{task_id}: gate output must be gate-report.json")
     if len(set(outputs)) != len(outputs):
         raise SpecError(f"{task_id}: duplicate outputs")
     if _overlap(outputs):
@@ -116,7 +157,12 @@ def _task(value: Any, number: int) -> Task:
     cache = value.get("cache", False)
     if type(cache) is not bool:
         raise SpecError(f"{task_id}.cache must be true or false")
-    return Task(task_id, tuple(command), tuple(inputs), outputs, tuple(raw_deps), timeout, cache)
+    if "gate" in value and cache:
+        raise SpecError(f"{task_id}: gate caching is not supported")
+    gate = _gate(value["gate"], task_id, destinations) if "gate" in value else None
+    if gate is not None and len(inputs) != 1:
+        raise SpecError(f"{task_id}: gate tasks require exactly one input")
+    return Task(task_id, tuple(command), tuple(inputs), outputs, tuple(raw_deps), timeout, cache, gate)
 
 
 def _ordered(tasks: list[Task]) -> tuple[Task, ...]:

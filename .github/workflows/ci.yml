@@ -19,6 +19,8 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python -m reproforge validate examples/hello_pipeline/project.json
       - run: python -m reproforge run examples/hello_pipeline/project.json
+      - run: python -m reproforge run examples/quality_pipeline/project.json
+      - run: python -m benchmarks.quality_gate --rows 1000
       - run: python -m pip wheel --no-deps --wheel-dir dist .
       - name: Install and smoke-test CLI
         shell: bash

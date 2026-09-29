@@ -1,0 +1,5 @@
+event_id,date,split,value
+e01,2024-01-03,train,4.0
+e02,2024-02-10,train,5.2
+e03,2024-03-12,test,6.1
+e04,2024-04-18,test,6.4
