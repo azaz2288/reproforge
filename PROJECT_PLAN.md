@@ -77,4 +77,4 @@ project.json ──validate──> DAG/topological plan
 
 ## 目前状态
 
-企划已确定；M1 正在实现。公开 GitHub 发布须等最小端到端版本与 CI 通过，不提前宣称整个平台完成。
+企划已确定；M1 的最小端到端版本已发布且通过 Windows/Linux CI。M2 正在实现严格双重显式启用的缓存（任务 `cache=true` 加运行 `--reuse`）；这不等于 M2 全部完成，锁、故障恢复和更完整的环境捕获仍待实现。不提前宣称整个平台完成。

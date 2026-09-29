@@ -62,13 +62,14 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 class Store:
     def __init__(self, root: Path):
-        for candidate in (root, root / "objects", root / "runs", root / "tmp"):
+        for candidate in (root, root / "objects", root / "runs", root / "tmp", root / "cache"):
             if candidate.is_symlink():
                 raise StorageError(f"Store directory is a symbolic link: {candidate}")
         self.root = root
         self.objects = root / "objects"
         self.runs = root / "runs"
         self.temporary = root / "tmp"
+        self.cache = root / "cache"
 
     def object_path(self, digest: str) -> Path:
         if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):

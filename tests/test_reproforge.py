@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from reproforge.runner import execute, verify
+from reproforge.runner import _cache_key, execute, verify
 from reproforge.spec import SpecError, load_plan
 from reproforge.storage import Store
 
@@ -62,6 +62,9 @@ class SpecificationTests(unittest.TestCase):
                 load_plan(project(root, [first, bad]))
             with self.assertRaisesRegex(SpecError, "Duplicate task IDs"):
                 load_plan(project(root, [first, copy.deepcopy(first)]))
+            first["cache"] = "yes"
+            with self.assertRaisesRegex(SpecError, "cache must be"):
+                load_plan(project(root, [first]))
 
 
 class ExecutionTests(unittest.TestCase):
@@ -121,7 +124,8 @@ class ExecutionTests(unittest.TestCase):
             store = Store(root / ".reproforge")
             store.runs.mkdir(parents=True)
             (store.runs / f"{run_id}.json").write_text(json.dumps({"version": 1, "run_id": run_id,
-                "status": "running", "plan_sha256": __import__("hashlib").sha256(plan.raw_bytes).hexdigest(), "tasks": []}), encoding="utf-8")
+                "status": "running", "plan_sha256": __import__("hashlib").sha256(plan.raw_bytes).hexdigest(),
+                "environment": {}, "tasks": []}), encoding="utf-8")
             self.assertTrue(any("incomplete" in issue for issue in verify(plan, run_id)))
 
     def test_detects_log_preview_and_exit_status_tampering(self):
@@ -151,6 +155,133 @@ class ExecutionTests(unittest.TestCase):
             drift = subprocess.run([sys.executable, "-m", "reproforge", "verify", str(path), run_id], capture_output=True, text=True)
             self.assertEqual(drift.returncode, 1)
             self.assertIn("differs", drift.stdout)
+
+    def test_cache_is_opt_in_and_input_change_invalidates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source.txt").write_text("first", encoding="utf-8")
+            script = ("from pathlib import Path; "
+                      "Path('result.txt').write_text(Path('source.txt').read_text().upper())")
+            selected = task("one", script, [{"project": "source.txt", "as": "source.txt"}])
+            selected["cache"] = True
+            plan = load_plan(project(root, [selected]))
+            first = execute(plan)
+            self.assertNotIn("cached_from", first["tasks"][0])
+            second = execute(plan)
+            self.assertNotIn("cached_from", second["tasks"][0], "Reuse is off unless explicitly requested")
+            third = execute(plan, reuse=True)
+            self.assertEqual(third["tasks"][0]["cached_from"], second["run_id"])
+            self.assertEqual(verify(plan, third["run_id"]), [])
+            (root / "source.txt").write_text("changed", encoding="utf-8")
+            fourth = execute(plan, reuse=True)
+            self.assertNotIn("cached_from", fourth["tasks"][0])
+            self.assertNotEqual(fourth["tasks"][0]["outputs"], third["tasks"][0]["outputs"])
+
+    def test_cache_rejects_corrupt_object_and_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = task("one", "from pathlib import Path; Path('result.txt').write_text('ok')")
+            selected["cache"] = True
+            plan = load_plan(project(root, [selected]))
+            first = execute(plan)
+            store = Store(root / ".reproforge")
+            key = first["tasks"][0]["cache_key"]
+            index = store.cache / f"{key}.json"
+            cached = json.loads(index.read_text(encoding="utf-8"))
+            cached["source_run_id"] = "a" * 32
+            index.write_text(json.dumps(cached), encoding="utf-8")
+            failed = execute(plan, reuse=True)
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("Cannot read cache source run", failed["tasks"][0]["error"])
+            cached["source_run_id"] = first["run_id"]
+            index.write_text(json.dumps(cached), encoding="utf-8")
+            reference = first["tasks"][0]["outputs"]["result.txt"]
+            store.object_path(reference["sha256"]).write_text("bad", encoding="utf-8")
+            failed = execute(plan, reuse=True)
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("Cache object failed validation", failed["tasks"][0]["error"])
+
+    def test_cache_rejects_incomplete_or_modified_source_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = task("one", "from pathlib import Path; Path('result.txt').write_text('ok')")
+            selected["cache"] = True
+            plan = load_plan(project(root, [selected]))
+            first = execute(plan)
+            ledger = Store(root / ".reproforge").runs / f"{first['run_id']}.json"
+            original = json.loads(ledger.read_text(encoding="utf-8"))
+            for field, value in (("status", "running"), ("environment", {})):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(original)
+                    changed[field] = value
+                    ledger.write_text(json.dumps(changed), encoding="utf-8")
+                    failed = execute(plan, reuse=True)
+                    self.assertEqual(failed["status"], "failed")
+                    self.assertIn("Malformed cache source run", failed["tasks"][0]["error"])
+            changed = copy.deepcopy(original)
+            changed["tasks"][0]["returncode"] = 4
+            ledger.write_text(json.dumps(changed), encoding="utf-8")
+            failed = execute(plan, reuse=True)
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("Cache index does not match source run", failed["tasks"][0]["error"])
+
+    def test_verify_rejects_modified_cache_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = task("one", "from pathlib import Path; Path('result.txt').write_text('ok')")
+            selected["cache"] = True
+            plan = load_plan(project(root, [selected]))
+            first = execute(plan)
+            second = execute(plan, reuse=True)
+            self.assertEqual(verify(plan, second["run_id"]), [])
+            ledger = Store(root / ".reproforge").runs / f"{first['run_id']}.json"
+            changed = json.loads(ledger.read_text(encoding="utf-8"))
+            changed["status"] = "failed"
+            ledger.write_text(json.dumps(changed), encoding="utf-8")
+            self.assertTrue(any("cached artifacts differ" in issue for issue in verify(plan, second["run_id"])))
+
+    def test_cache_key_changes_with_plan_and_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = task("one", "pass")
+            selected["cache"] = True
+            path = project(root, [selected])
+            plan = load_plan(path)
+            key = _cache_key(plan, plan.tasks[0], [], {"python": "3.12", "platform": "A"})
+            self.assertNotEqual(key, _cache_key(plan, plan.tasks[0], [], {"python": "3.12", "platform": "B"}))
+            path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            changed = load_plan(path)
+            self.assertNotEqual(key, _cache_key(changed, changed.tasks[0], [], {"python": "3.12", "platform": "A"}))
+
+    def test_cached_dependency_feeds_downstream_task(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source.txt").write_text("hello", encoding="utf-8")
+            first = task("first", "from pathlib import Path; Path('upper.txt').write_text(Path('source.txt').read_text().upper())",
+                         [{"project": "source.txt", "as": "source.txt"}], ["upper.txt"])
+            first["cache"] = True
+            second = task("second", "from pathlib import Path; Path('result.txt').write_text(Path('upper.txt').read_text()+'!')",
+                          [{"task": "first", "artifact": "upper.txt", "as": "upper.txt"}])
+            plan = load_plan(project(root, [second, first]))
+            first_run = execute(plan)
+            next_run = execute(plan, reuse=True)
+            self.assertEqual(next_run["tasks"][0]["cached_from"], first_run["run_id"])
+            self.assertEqual(next_run["tasks"][1]["status"], "success")
+            self.assertNotIn("cached_from", next_run["tasks"][1])
+            self.assertEqual(verify(plan, next_run["run_id"]), [])
+
+    def test_cli_reuse_is_visible(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = task("one", "from pathlib import Path; Path('result.txt').write_text('ok')")
+            selected["cache"] = True
+            path = project(root, [selected])
+            command = [sys.executable, "-m", "reproforge", "run", str(path)]
+            first = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            second = subprocess.run([*command, "--reuse"], capture_output=True, text=True)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn("reused verified artifacts", second.stdout)
 
 
 if __name__ == "__main__":

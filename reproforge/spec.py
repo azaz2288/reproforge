@@ -43,6 +43,7 @@ class Task:
     outputs: tuple[str, ...]
     depends_on: tuple[str, ...]
     timeout_seconds: int
+    cache: bool
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,7 @@ def _overlap(paths: tuple[str, ...] | set[str]) -> bool:
 
 def _task(value: Any, number: int) -> Task:
     label = f"tasks[{number}]"
-    if not isinstance(value, dict) or set(value) - {"id", "command", "inputs", "outputs", "depends_on", "timeout_seconds"}:
+    if not isinstance(value, dict) or set(value) - {"id", "command", "inputs", "outputs", "depends_on", "timeout_seconds", "cache"}:
         raise SpecError(f"{label} is not a task object or has unknown fields")
     task_id = value.get("id")
     if not isinstance(task_id, str) or not ID_PATTERN.fullmatch(task_id):
@@ -112,7 +113,10 @@ def _task(value: Any, number: int) -> Task:
     timeout = value.get("timeout_seconds", 300)
     if type(timeout) is not int or not 1 <= timeout <= 3600:
         raise SpecError(f"{task_id}.timeout_seconds must be an integer from 1 to 3600")
-    return Task(task_id, tuple(command), tuple(inputs), outputs, tuple(raw_deps), timeout)
+    cache = value.get("cache", False)
+    if type(cache) is not bool:
+        raise SpecError(f"{task_id}.cache must be true or false")
+    return Task(task_id, tuple(command), tuple(inputs), outputs, tuple(raw_deps), timeout, cache)
 
 
 def _ordered(tasks: list[Task]) -> tuple[Task, ...]:

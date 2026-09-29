@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import platform
 import subprocess
 import sys
@@ -42,7 +41,74 @@ def _log_record(store: Store, path: Path) -> dict[str, Any]:
     return {**reference, "preview": preview, "truncated": reference["size"] > 4096}
 
 
-def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _cache_key(plan: Plan, task: Task, inputs: list[dict[str, Any]], environment: dict[str, str]) -> str:
+    material = {"plan_sha256": hashlib.sha256(plan.raw_bytes).hexdigest(), "task_id": task.id,
+                "command": task.command, "timeout_seconds": task.timeout_seconds,
+                "outputs": task.outputs, "inputs": inputs, "environment": environment}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _cache_hit(store: Store, key: str, task: Task, plan: Plan,
+               inputs: list[dict[str, Any]], environment: dict[str, str]) -> dict[str, Any] | None:
+    path = store.cache / f"{key}.json"
+    if path.is_symlink():
+        raise StorageError(f"Cache index is a symbolic link: {path}")
+    if not path.exists():
+        return None
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StorageError(f"Cannot read cache index {path}: {exc}") from exc
+    if (not isinstance(cached, dict) or cached.get("version") != 1 or cached.get("key") != key
+            or not isinstance(cached.get("source_run_id"), str)
+            or not isinstance(cached.get("outputs"), dict) or set(cached["outputs"]) != set(task.outputs)
+            or not isinstance(cached.get("stdout"), dict) or not isinstance(cached.get("stderr"), dict)):
+        raise StorageError(f"Malformed cache index: {path}")
+    source_id = cached["source_run_id"]
+    if len(source_id) != 32 or any(char not in "0123456789abcdef" for char in source_id):
+        raise StorageError(f"Malformed cache source run ID: {path}")
+    source_path = store.runs / f"{source_id}.json"
+    try:
+        source_run = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StorageError(f"Cannot read cache source run {source_id}: {exc}") from exc
+    if (not isinstance(source_run, dict) or source_run.get("version") != 1
+            or source_run.get("run_id") != source_id or source_run.get("status") != "success"
+            or source_run.get("plan_sha256") != hashlib.sha256(plan.raw_bytes).hexdigest()
+            or source_run.get("environment") != environment
+            or not isinstance(source_run.get("tasks"), list)):
+        raise StorageError(f"Malformed cache source run: {source_id}")
+    matching = [item for item in source_run.get("tasks", []) if isinstance(item, dict) and item.get("id") == task.id]
+    if (len(matching) != 1 or matching[0].get("status") != "success"
+            or matching[0].get("returncode") != 0 or matching[0].get("command") != list(task.command)
+            or matching[0].get("inputs") != inputs or "cached_from" in matching[0]
+            or matching[0].get("cache_key") != key or any(matching[0].get(field) != cached[field]
+            for field in ("outputs", "stdout", "stderr"))):
+        raise StorageError(f"Cache index does not match source run: {path}")
+    for reference in (*cached["outputs"].values(), cached["stdout"], cached["stderr"]):
+        if not isinstance(reference, dict):
+            raise StorageError(f"Malformed cache object reference: {path}")
+        checked = {field: reference.get(field) for field in ("sha256", "size")}
+        issues = store.check(checked)
+        if issues:
+            raise StorageError(f"Cache object failed validation: {issues[0]}")
+    for stream in ("stdout", "stderr"):
+        reference = cached[stream]
+        with store.object_path(reference["sha256"]).open("r", encoding="utf-8", errors="replace") as source:
+            preview = source.read(4096)
+        if reference.get("preview") != preview or reference.get("truncated") is not (reference["size"] > 4096):
+            raise StorageError(f"Cache {stream} preview metadata mismatch: {path}")
+    return cached
+
+
+def _record_cache(store: Store, key: str, run_id: str, entry: dict[str, Any]) -> None:
+    value = {"version": 1, "key": key, "source_run_id": run_id, "outputs": entry["outputs"],
+             "stdout": entry["stdout"], "stderr": entry["stderr"]}
+    atomic_json(store.cache / f"{key}.json", value)
+
+
+def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[str, Any]],
+              environment: dict[str, str], reuse: bool) -> dict[str, Any]:
     entry: dict[str, Any] = {"id": task.id, "command": list(task.command), "status": "running",
                              "inputs": [], "outputs": {}, "started_at": _now()}
     store.temporary.mkdir(parents=True, exist_ok=True)
@@ -67,6 +133,17 @@ def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[st
                 origin = {"task": input_spec.task, "artifact": input_spec.artifact}
             store.materialize(reference, destination)
             entry["inputs"].append({"as": input_spec.destination, "source": origin, "object": reference})
+
+        cache_key = _cache_key(plan, task, entry["inputs"], environment) if task.cache else None
+        if cache_key is not None:
+            entry["cache_key"] = cache_key
+        if reuse and cache_key is not None:
+            cached = _cache_hit(store, cache_key, task, plan, entry["inputs"], environment)
+            if cached is not None:
+                entry.update({"status": "success", "returncode": 0, "outputs": cached["outputs"],
+                              "stdout": cached["stdout"], "stderr": cached["stderr"],
+                              "cached_from": cached["source_run_id"], "finished_at": _now()})
+                return entry
 
         stdout_path = root / "stdout.log"
         stderr_path = root / "stderr.log"
@@ -106,19 +183,20 @@ def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[st
     return entry
 
 
-def execute(plan: Plan) -> dict[str, Any]:
+def execute(plan: Plan, reuse: bool = False) -> dict[str, Any]:
     store = Store(plan.root / ".reproforge")
     run_id = uuid.uuid4().hex
+    environment = {"python": sys.version.split()[0], "platform": platform.platform(),
+                   "executable": str(Path(sys.executable).resolve())}
     record: dict[str, Any] = {"version": 1, "run_id": run_id, "status": "running",
                               "plan_sha256": hashlib.sha256(plan.raw_bytes).hexdigest(),
-                              "created_at": _now(), "environment": {"python": sys.version.split()[0],
-                              "platform": platform.platform()}, "tasks": []}
+                              "created_at": _now(), "environment": environment, "tasks": []}
     path = store.runs / f"{run_id}.json"
     atomic_json(path, record)
     completed: dict[str, dict[str, Any]] = {}
     for task in plan.tasks:
         try:
-            entry = _task_run(plan, task, store, completed)
+            entry = _task_run(plan, task, store, completed, environment, reuse)
         except (OSError, StorageError, SpecError) as exc:
             entry = {"id": task.id, "command": list(task.command), "status": "failed", "inputs": [],
                      "outputs": {}, "error": str(exc), "started_at": _now(), "finished_at": _now()}
@@ -134,6 +212,14 @@ def execute(plan: Plan) -> dict[str, Any]:
     record["status"] = "success"
     record["finished_at"] = _now()
     atomic_json(path, record)
+    for task, entry in zip(plan.tasks, record["tasks"]):
+        if task.cache and "cached_from" not in entry and "cache_key" in entry:
+            try:
+                _record_cache(store, entry["cache_key"], run_id, entry)
+            except StorageError as exc:
+                # Cache is optional; a completed task and its ledger remain valid.
+                entry["cache_warning"] = str(exc)
+                atomic_json(path, record)
     return record
 
 
@@ -154,6 +240,9 @@ def verify(plan: Plan, run_id: str) -> list[str]:
     if record.get("status") not in ("success", "failed", "running"):
         issues.append("Invalid run status")
     previous: dict[str, dict[str, Any]] = {}
+    environment = record.get("environment")
+    if not isinstance(environment, dict):
+        raise StorageError("Malformed recorded environment")
     for index, entry in enumerate(record["tasks"]):
         if not isinstance(entry, dict) or index >= len(plan.tasks):
             raise StorageError("Malformed or unexpected task entry")
@@ -174,6 +263,12 @@ def verify(plan: Plan, run_id: str) -> list[str]:
             issues.append(f"{task.id}: declared outputs differ from run record")
         if entry.get("status") == "success" and len(inputs) != len(task.inputs):
             issues.append(f"{task.id}: input count differs from plan")
+        if task.cache and len(inputs) == len(task.inputs):
+            expected_key = _cache_key(plan, task, inputs, environment)
+            if entry.get("cache_key") != expected_key:
+                issues.append(f"{task.id}: cache key mismatch")
+        elif entry.get("cache_key") is not None or entry.get("cached_from") is not None:
+            issues.append(f"{task.id}: cache metadata on a non-cacheable or incomplete task")
         for input_index, item in enumerate(inputs):
             if not isinstance(item, dict) or not isinstance(item.get("source"), dict):
                 raise StorageError(f"Malformed input in task {task.id}")
@@ -206,6 +301,33 @@ def verify(plan: Plan, run_id: str) -> list[str]:
                         issues.append(f"{task.id}: {stream} preview metadata mismatch")
             elif entry.get("status") in ("success", "timeout") or "returncode" in entry:
                 issues.append(f"{task.id}: missing {stream} log reference")
+        if "cached_from" in entry:
+            source_id = entry["cached_from"]
+            if (not isinstance(source_id, str) or len(source_id) != 32
+                    or any(char not in "0123456789abcdef" for char in source_id)):
+                issues.append(f"{task.id}: invalid cache source run ID")
+            else:
+                source_path = store.runs / f"{source_id}.json"
+                try:
+                    source_record = json.loads(source_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise StorageError(f"Cannot read cache source run {source_id}: {exc}") from exc
+                if not isinstance(source_record, dict) or not isinstance(source_record.get("tasks"), list):
+                    issues.append(f"{task.id}: malformed cache source run")
+                    continue
+                source_entries = source_record["tasks"]
+                candidates = [item for item in source_entries if isinstance(item, dict) and item.get("id") == task.id]
+                if (source_record.get("version") != 1 or source_record.get("run_id") != source_id
+                        or source_record.get("status") != "success"
+                        or source_record.get("plan_sha256") != record.get("plan_sha256")
+                        or source_record.get("environment") != environment
+                        or len(candidates) != 1 or candidates[0].get("status") != "success"
+                        or candidates[0].get("returncode") != 0
+                        or candidates[0].get("inputs") != inputs
+                        or "cached_from" in candidates[0]
+                        or candidates[0].get("cache_key") != entry.get("cache_key")
+                        or any(candidates[0].get(field) != entry.get(field) for field in ("outputs", "stdout", "stderr"))):
+                    issues.append(f"{task.id}: cached artifacts differ from source run")
         previous[task.id] = entry
     if record.get("status") == "success" and len(record["tasks"]) != len(plan.tasks):
         issues.append("Successful run does not contain every task")
