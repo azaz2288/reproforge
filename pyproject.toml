@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reproforge"
+version = "0.1.0"
+description = "Local-first, auditable data-pipeline execution"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{name = "azaz2288"}]
+
+[project.scripts]
+reproforge = "reproforge.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["reproforge*"]

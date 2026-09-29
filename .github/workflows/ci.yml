@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m reproforge validate examples/hello_pipeline/project.json
+      - run: python -m reproforge run examples/hello_pipeline/project.json
+      - run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Install and smoke-test CLI
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          reproforge --help
+          python -c "import reproforge; assert 'site-packages' in reproforge.__file__"

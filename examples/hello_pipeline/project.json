@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "report",
+      "command": ["@python", "scripts/report.py", "summary.json", "report.txt"],
+      "inputs": [
+        {"project": "scripts/report.py", "as": "scripts/report.py"},
+        {"task": "summary", "artifact": "summary.json", "as": "summary.json"}
+      ],
+      "outputs": ["report.txt"]
+    },
+    {
+      "id": "summary",
+      "command": ["@python", "scripts/summary.py", "data/orders.csv", "summary.json"],
+      "inputs": [
+        {"project": "scripts/summary.py", "as": "scripts/summary.py"},
+        {"project": "data/orders.csv", "as": "data/orders.csv"}
+      ],
+      "outputs": ["summary.json"]
+    }
+  ]
+}
