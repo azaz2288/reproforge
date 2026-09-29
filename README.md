@@ -31,6 +31,8 @@ A gate is a task with one declared CSV input, no `command`, no cache, and a fixe
 
 Only one writer can execute a project at a time. `reproforge recover project.json` marks abandoned `running` ledgers as `interrupted` after taking the project lock. It does not resume commands or undo side effects. `reproforge serve project.json` opens a read-only dashboard on `127.0.0.1` for runs, dependencies, artifact hashes and comparison. It is not authenticated; never expose it on a public network.
 
+To retry a failed or interrupted run without recomputing its successful prefix, use `reproforge run project.json --resume RUN_ID`. This creates a **new** run ledger. The source ledger and stored objects must verify, the plan and runtime environment must match, and each resumed task's live declared inputs must still match. A changed input or corrupt source fails closed. This does not undo external side effects or guarantee determinism for commands that read undeclared state. `--reuse` is separate opt-in cache behavior.
+
 The [benchmark and recovery notes](BENCHMARKS.md) show a repeatable synthetic-data test and an operational recovery exercise. They do not establish full M5 scale or reproducibility on real-world data.
 
 The [UCI Iris case](examples/iris_case/README.md) is an opt-in real public-data pipeline with a pinned raw download, quality gate, simple baseline model and traceable report. CI uses an offline fixture; the actual public-data run was verified locally.
@@ -39,7 +41,7 @@ The [UCI Iris case](examples/iris_case/README.md) is an opt-in real public-data 
 
 Tasks may add `"cache": true` only if their result is deterministic from their declared inputs, command, whole plan and recorded runtime environment. Even then, reuse happens only with `reproforge run project.json --reuse`. The cache key includes the plan bytes, command/timeout, declared output names, content hashes of inputs, Python version, platform and interpreter path. Reused outputs and logs are checked against their SHA-256 objects and the source run ledger. Any corrupt index or object fails the run rather than silently reusing it; changing an input, plan or recorded environment produces a new key.
 
-This is **not** a hermetic build cache. The engine cannot detect undeclared files, network responses, locale, environment variables, imported package changes or hidden randomness. Do not enable caching for tasks that depend on them. Partial-task resumption and broader environment capture are still open M2 work. Reuse is disabled by default.
+This is **not** a hermetic build cache. The engine cannot detect undeclared files, network responses, locale, environment variables, imported package changes or hidden randomness. Do not enable caching for tasks that depend on them. Resume reuses a verified successful prefix but does not restore a partially executing task. Broader environment capture is still open M2 work. Reuse is disabled by default.
 
 ## Limits
 

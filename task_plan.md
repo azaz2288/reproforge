@@ -4,7 +4,7 @@
 Implement the project plan in `PROJECT_PLAN.md`, starting with a reliable M1 execution kernel. Do not claim later milestones complete or fabricate effort.
 
 ## Current phase
-Released tested M2/M3/M4 slices and an M5 example/benchmark. Remaining plan scope is open engineering work, not silently marked complete.
+M2 verified-prefix resume implementation complete locally; release verification in progress. Remaining plan scope stays explicit.
 
 ## Phases
 - Project discovery and scope: complete.
@@ -18,6 +18,7 @@ Released tested M2/M3/M4 slices and an M5 example/benchmark. Remaining plan scop
 - M4 visualization slice: loopback-only read-only dashboard lists runs, DAG dependencies, artifact hashes, failures and run differences. Multi-user access control is not implemented.
 - M5 scale/handoff: repeatable synthetic CSV benchmark, recovery exercise and pinned UCI Iris public-data case implemented; multi-gigabyte scale validation remains pending.
 - Current release check: 23 local tests pass; final published commit `637c005` passed Windows/Ubuntu CI run 36606745888. Working tree clean before this planning update.
+- M2 resume acceptance: `run --resume RUN_ID` accepts only a verified failed/interrupted source ledger with matching plan/environment; reuses the longest successful prefix only after live declared inputs still match; executes remaining tasks in a new ledger. A changed input or corrupt source must fail closed. Ordinary `--reuse` cache remains independent.
 
 ## Decision log
 | Decision | Rationale |

@@ -110,7 +110,8 @@ def _record_cache(store: Store, key: str, run_id: str, entry: dict[str, Any]) ->
 
 
 def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[str, Any]],
-              environment: dict[str, str], reuse: bool) -> dict[str, Any]:
+              environment: dict[str, str], reuse: bool,
+              resume_entry: dict[str, Any] | None = None, resume_id: str | None = None) -> dict[str, Any]:
     entry: dict[str, Any] = {"id": task.id, "command": list(task.command), "status": "running",
                              "inputs": [], "outputs": {}, "started_at": _now()}
     store.temporary.mkdir(parents=True, exist_ok=True)
@@ -139,6 +140,18 @@ def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[st
         cache_key = _cache_key(plan, task, entry["inputs"], environment) if task.cache else None
         if cache_key is not None:
             entry["cache_key"] = cache_key
+        if resume_entry is not None:
+            if resume_entry.get("inputs") != entry["inputs"]:
+                raise StorageError(f"Cannot resume {task.id}: declared inputs changed")
+            for reference in (*resume_entry["outputs"].values(), resume_entry["stdout"], resume_entry["stderr"]):
+                object_ref = {field: reference.get(field) for field in ("sha256", "size")}
+                issues = store.check(object_ref)
+                if issues:
+                    raise StorageError(f"Cannot resume {task.id}: {issues[0]}")
+            entry.update({"status": "success", "returncode": 0, "outputs": resume_entry["outputs"],
+                          "stdout": resume_entry["stdout"], "stderr": resume_entry["stderr"],
+                          "resumed_from": resume_id, "finished_at": _now()})
+            return entry
         if reuse and cache_key is not None:
             cached = _cache_hit(store, cache_key, task, plan, entry["inputs"], environment)
             if cached is not None:
@@ -200,25 +213,38 @@ def _task_run(plan: Plan, task: Task, store: Store, completed: dict[str, dict[st
     return entry
 
 
-def execute(plan: Plan, reuse: bool = False) -> dict[str, Any]:
+def execute(plan: Plan, reuse: bool = False, resume: str | None = None) -> dict[str, Any]:
     store = Store(plan.root / ".reproforge")
     with project_lock(store.root):
-        return _execute_locked(plan, store, reuse)
+        return _execute_locked(plan, store, reuse, resume)
 
 
-def _execute_locked(plan: Plan, store: Store, reuse: bool) -> dict[str, Any]:
+def _execute_locked(plan: Plan, store: Store, reuse: bool, resume: str | None) -> dict[str, Any]:
     run_id = uuid.uuid4().hex
     environment = {"python": sys.version.split()[0], "platform": platform.platform(),
                    "executable": str(Path(sys.executable).resolve())}
+    resume_entries: list[dict[str, Any]] = []
+    if resume is not None:
+        problems = verify(plan, resume)
+        if problems:
+            raise StorageError(f"Cannot resume run {resume}: {problems[0]}")
+        source = json.loads((store.runs / f"{resume}.json").read_text(encoding="utf-8"))
+        if source.get("status") not in ("failed", "interrupted") or source.get("environment") != environment:
+            raise StorageError("Resume source must be failed/interrupted with the same runtime environment")
+        for candidate in source["tasks"]:
+            if candidate.get("status") != "success":
+                break
+            resume_entries.append(candidate)
     record: dict[str, Any] = {"version": 1, "run_id": run_id, "status": "running",
                               "plan_sha256": hashlib.sha256(plan.raw_bytes).hexdigest(),
                               "created_at": _now(), "environment": environment, "tasks": []}
     path = store.runs / f"{run_id}.json"
     atomic_json(path, record)
     completed: dict[str, dict[str, Any]] = {}
-    for task in plan.tasks:
+    for index, task in enumerate(plan.tasks):
         try:
-            entry = _task_run(plan, task, store, completed, environment, reuse)
+            entry = _task_run(plan, task, store, completed, environment, reuse,
+                              resume_entries[index] if index < len(resume_entries) else None, resume)
         except (OSError, StorageError, SpecError) as exc:
             entry = {"id": task.id, "command": list(task.command), "status": "failed", "inputs": [],
                      "outputs": {}, "error": str(exc), "started_at": _now(), "finished_at": _now()}
@@ -235,7 +261,7 @@ def _execute_locked(plan: Plan, store: Store, reuse: bool) -> dict[str, Any]:
     record["finished_at"] = _now()
     atomic_json(path, record)
     for task, entry in zip(plan.tasks, record["tasks"]):
-        if task.cache and "cached_from" not in entry and "cache_key" in entry:
+        if task.cache and "cached_from" not in entry and "resumed_from" not in entry and "cache_key" in entry:
             try:
                 _record_cache(store, entry["cache_key"], run_id, entry)
             except StorageError as exc:
@@ -396,6 +422,30 @@ def verify(plan: Plan, run_id: str) -> list[str]:
                         or candidates[0].get("cache_key") != entry.get("cache_key")
                         or any(candidates[0].get(field) != entry.get(field) for field in ("outputs", "stdout", "stderr"))):
                     issues.append(f"{task.id}: cached artifacts differ from source run")
+        if "resumed_from" in entry:
+            source_id = entry["resumed_from"]
+            if (not isinstance(source_id, str) or len(source_id) != 32
+                    or any(char not in "0123456789abcdef" for char in source_id)):
+                issues.append(f"{task.id}: invalid resume source run ID")
+            else:
+                try:
+                    source_record = json.loads((store.runs / f"{source_id}.json").read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise StorageError(f"Cannot read resume source run {source_id}: {exc}") from exc
+                source_tasks = source_record.get("tasks") if isinstance(source_record, dict) else None
+                source_entry = source_tasks[index] if isinstance(source_tasks, list) and index < len(source_tasks) else None
+                if (not isinstance(source_record, dict) or source_id == run_id
+                        or source_record.get("run_id") != source_id
+                        or source_record.get("status") not in ("failed", "interrupted")
+                        or source_record.get("plan_sha256") != record.get("plan_sha256")
+                        or source_record.get("environment") != environment
+                        or not isinstance(source_entry, dict) or source_entry.get("id") != task.id
+                        or source_entry.get("status") != "success"
+                        or source_entry.get("returncode") != 0
+                        or source_entry.get("command") != list(task.command)
+                        or any(source_entry.get(field) != entry.get(field)
+                               for field in ("inputs", "outputs", "stdout", "stderr"))):
+                    issues.append(f"{task.id}: resumed artifacts differ from source run")
         previous[task.id] = entry
     if record.get("status") == "success" and len(record["tasks"]) != len(plan.tasks):
         issues.append("Successful run does not contain every task")

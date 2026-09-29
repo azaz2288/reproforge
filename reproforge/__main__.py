@@ -21,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("project", type=Path, help="path to a version-1 project JSON specification")
         if name == "run":
             command.add_argument("--reuse", action="store_true", help="reuse verified outputs of tasks that explicitly declare cache=true")
+            command.add_argument("--resume", metavar="RUN_ID", help="reuse the verified successful prefix of a failed or interrupted run")
         if name == "verify":
             command.add_argument("run_id")
         if name == "serve":
@@ -34,12 +35,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{number}. {task.id}: {len(task.inputs)} inputs, {len(task.outputs)} outputs")
             return 0
         if args.command == "run":
-            record = execute(plan, reuse=args.reuse)
+            record = execute(plan, reuse=args.reuse, resume=args.resume)
             print(f"Run {record['run_id']}: {record['status']}")
             for task in record["tasks"]:
                 print(f"  {task['id']}: {task['status']}")
                 if task.get("cached_from"):
                     print(f"    reused verified artifacts from {task['cached_from']}")
+                if task.get("resumed_from"):
+                    print(f"    resumed verified artifacts from {task['resumed_from']}")
                 if task.get("error"):
                     print(f"    {task['error']}")
             return 0 if record["status"] == "success" else 1

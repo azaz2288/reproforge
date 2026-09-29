@@ -84,6 +84,59 @@ class SpecificationTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_resume_reuses_verified_prefix_then_retries_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source.txt").write_text("ok", encoding="utf-8")
+            first = task("first", "from pathlib import Path; Path('one.txt').write_text(Path('source.txt').read_text())",
+                         [{"project": "source.txt", "as": "source.txt"}], ["one.txt"])
+            second = task("second", "from pathlib import Path; Path('two.txt').write_text(Path('one.txt').read_text())",
+                          [{"task": "first", "artifact": "one.txt", "as": "one.txt"}], ["two.txt"])
+            plan = load_plan(project(root, [first, second]))
+            original = execute(plan)
+            self.assertEqual(original["status"], "success")
+            ledger = Store(root / ".reproforge").runs / f"{original['run_id']}.json"
+            changed = json.loads(ledger.read_text(encoding="utf-8"))
+            changed["status"] = "interrupted"
+            changed["tasks"] = changed["tasks"][:1]
+            ledger.write_text(json.dumps(changed), encoding="utf-8")
+            self.assertEqual(verify(plan, original["run_id"]), [])
+            resumed = execute(plan, resume=original["run_id"])
+            self.assertEqual(resumed["status"], "success")
+            self.assertEqual(resumed["tasks"][0]["resumed_from"], original["run_id"])
+            self.assertNotIn("resumed_from", resumed["tasks"][1])
+            self.assertEqual(verify(plan, resumed["run_id"]), [])
+
+    def test_resume_rejects_changed_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.txt"
+            source.write_text("old", encoding="utf-8")
+            first = task("first", "from pathlib import Path; Path('one.txt').write_text(Path('source.txt').read_text())",
+                         [{"project": "source.txt", "as": "source.txt"}], ["one.txt"])
+            second = task("second", "import sys; sys.exit(7)", outputs=[])
+            plan = load_plan(project(root, [first, second]))
+            failed = execute(plan)
+            self.assertEqual(failed["status"], "failed")
+            source.write_text("new", encoding="utf-8")
+            resumed = execute(plan, resume=failed["run_id"])
+            self.assertEqual(resumed["status"], "failed")
+            self.assertIn("declared inputs changed", resumed["tasks"][0]["error"])
+            self.assertEqual(verify(plan, resumed["run_id"]), [])
+
+    def test_resume_rejects_corrupt_source_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = task("first", "from pathlib import Path; Path('one.txt').write_text('ok')", outputs=["one.txt"])
+            second = task("second", "import sys; sys.exit(7)", outputs=[])
+            plan = load_plan(project(root, [first, second]))
+            failed = execute(plan)
+            store = Store(root / ".reproforge")
+            reference = failed["tasks"][0]["outputs"]["one.txt"]
+            store.object_path(reference["sha256"]).write_text("changed", encoding="utf-8")
+            with self.assertRaisesRegex(StorageError, "Cannot resume run"):
+                execute(plan, resume=failed["run_id"])
+
     def test_iris_case_pipeline_with_offline_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
