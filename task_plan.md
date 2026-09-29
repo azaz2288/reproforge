@@ -4,7 +4,7 @@
 Implement the project plan in `PROJECT_PLAN.md`, starting with a reliable M1 execution kernel. Do not claim later milestones complete or fabricate effort.
 
 ## Current phase
-Verification and release of the new M2/M3/M4 slices; M5 benchmark/handoff remains the next phase.
+Released tested M2/M3/M4 slices and an M5 example/benchmark. Remaining plan scope is open engineering work, not silently marked complete.
 
 ## Phases
 - Project discovery and scope: complete.
@@ -17,6 +17,7 @@ Verification and release of the new M2/M3/M4 slices; M5 benchmark/handoff remain
 - M3 quality gates: built-in CSV quality and temporal split checks emit machine-readable reports, fail closed and block downstream tasks. Independent `verify` recomputes gate evidence from stored input. Plugin API is not implemented.
 - M4 visualization slice: loopback-only read-only dashboard lists runs, DAG dependencies, artifact hashes, failures and run differences. Multi-user access control is not implemented.
 - M5 scale/handoff: repeatable synthetic CSV benchmark, recovery exercise and pinned UCI Iris public-data case implemented; multi-gigabyte scale validation remains pending.
+- Current release check: 23 local tests pass; final published commit `637c005` passed Windows/Ubuntu CI run 36606745888. Working tree clean before this planning update.
 
 ## Decision log
 | Decision | Rationale |
