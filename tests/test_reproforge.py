@@ -1,6 +1,7 @@
 import copy
 import http.client
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,24 @@ class SpecificationTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_iris_case_pipeline_with_offline_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            example = Path(__file__).resolve().parents[1] / "examples" / "iris_case"
+            (root / "scripts").mkdir()
+            (root / "data").mkdir()
+            for name in ("train.py", "report.py"):
+                shutil.copy2(example / "scripts" / name, root / "scripts" / name)
+            shutil.copy2(example / "project.json", root / "project.json")
+            lines = ["sepal_length,sepal_width,petal_length,petal_width,species"]
+            for label, center in (("Iris-setosa", 1), ("Iris-versicolor", 5), ("Iris-virginica", 9)):
+                lines.extend(f"{center}.{number % 5},2.0,3.0,4.0,{label}" for number in range(50))
+            (root / "data" / "iris.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            plan = load_plan(root / "project.json")
+            run = execute(plan)
+            self.assertEqual(run["status"], "success")
+            self.assertEqual(verify(plan, run["run_id"]), [])
+
     def test_recover_marks_only_abandoned_matching_run(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -33,6 +33,8 @@ Only one writer can execute a project at a time. `reproforge recover project.jso
 
 The [benchmark and recovery notes](BENCHMARKS.md) show a repeatable synthetic-data test and an operational recovery exercise. They do not establish full M5 scale or reproducibility on real-world data.
 
+The [UCI Iris case](examples/iris_case/README.md) is an opt-in real public-data pipeline with a pinned raw download, quality gate, simple baseline model and traceable report. CI uses an offline fixture; the actual public-data run was verified locally.
+
 ## Experimental opt-in reuse (M2 in progress)
 
 Tasks may add `"cache": true` only if their result is deterministic from their declared inputs, command, whole plan and recorded runtime environment. Even then, reuse happens only with `reproforge run project.json --reuse`. The cache key includes the plan bytes, command/timeout, declared output names, content hashes of inputs, Python version, platform and interpreter path. Reused outputs and logs are checked against their SHA-256 objects and the source run ledger. Any corrupt index or object fails the run rather than silently reusing it; changing an input, plan or recorded environment produces a new key.

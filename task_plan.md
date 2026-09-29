@@ -16,7 +16,7 @@ Verification and release of the new M2/M3/M4 slices; M5 benchmark/handoff remain
 - M2 concurrency/recovery slice: implemented OS-backed per-project writer lock and explicit interruption marking for abandoned run ledgers. Local tests pass; no partial-task resume yet.
 - M3 quality gates: built-in CSV quality and temporal split checks emit machine-readable reports, fail closed and block downstream tasks. Independent `verify` recomputes gate evidence from stored input. Plugin API is not implemented.
 - M4 visualization slice: loopback-only read-only dashboard lists runs, DAG dependencies, artifact hashes, failures and run differences. Multi-user access control is not implemented.
-- M5 scale/handoff: repeatable synthetic CSV benchmark and recovery exercise documented; real public-data case and multi-gigabyte scale validation remain pending.
+- M5 scale/handoff: repeatable synthetic CSV benchmark, recovery exercise and pinned UCI Iris public-data case implemented; multi-gigabyte scale validation remains pending.
 
 ## Decision log
 | Decision | Rationale |
@@ -33,3 +33,4 @@ Verification and release of the new M2/M3/M4 slices; M5 benchmark/handoff remain
 | `git status` reported “not a git repository” after the first local wheel build | 1 | Expected before repository initialization; initialize only after code/tests are reviewed. |
 | M2 test for an incomplete ledger raised `Malformed recorded environment` | 1 | The hand-written fixture omitted the new environment field; add it, then rerun the suite. |
 | README update patch missed an exact sentence | 1 | Re-read the current README and apply smaller, exact-context edits. |
+| UCI download preview used `Substring` on a byte array | 1 | Treat response as bytes; decode explicitly before inspection. |

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "report",
+      "command": ["@python", "report.py"],
+      "inputs": [
+        {"task": "train", "artifact": "metrics.json", "as": "metrics.json"},
+        {"project": "scripts/report.py", "as": "report.py"}
+      ],
+      "outputs": ["report.md"]
+    },
+    {
+      "id": "train",
+      "command": ["@python", "train.py"],
+      "inputs": [
+        {"project": "data/iris.csv", "as": "iris.csv"},
+        {"project": "scripts/train.py", "as": "train.py"},
+        {"task": "quality", "artifact": "gate-report.json", "as": "gate-report.json"}
+      ],
+      "outputs": ["model.json", "metrics.json"]
+    },
+    {
+      "id": "quality",
+      "inputs": [{"project": "data/iris.csv", "as": "iris.csv"}],
+      "gate": {"type": "csv_quality", "input": "iris.csv", "required_columns": ["sepal_length", "sepal_width", "petal_length", "petal_width", "species"], "min_rows": 150, "max_null_fraction": 0}
+    }
+  ]
+}
