@@ -6,6 +6,8 @@ Implement the project plan in `PROJECT_PLAN.md`, starting with a reliable M1 exe
 ## Current phase
 M2 verified-prefix resume implementation complete locally; release verification in progress. Remaining plan scope stays explicit.
 
+2026-10-06 maintenance: v0.4.1 immutable-object publication hardening implemented after two failing regressions. Verify temporary bytes before publication, exclusive hard link, validate concurrent duplicates without overwriting/removing other objects.31 local tests passed; independent package and same-SHA CI verification in progress. Timeout descendant handling remains open; no change to that guarantee.
+
 ## Phases
 - Project discovery and scope: complete.
 - Architecture and acceptance criteria: complete in `PROJECT_PLAN.md`.

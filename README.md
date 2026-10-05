@@ -45,6 +45,8 @@ This is **not** a hermetic build cache. The engine cannot detect undeclared file
 
 ## Limits
 
+v0.4.1 verifies a temporary object against the expected digest and size **before** publishing it, then uses an exclusive hard link instead of replacing an immutable object. Concurrent duplicate publication validates the existing object without overwriting or deleting it. Source mutation and I/O failure cannot expose invalid bytes under a trusted digest. This requires local filesystem hard-link support; failure is explicit, with no unsafe replacement fallback. File fsync is not a guarantee of directory-entry durability after power loss, and the store still assumes trusted local writers.
+
 - A task can still read other files, use the network or spawn child processes; the temporary directory is organizational isolation, not a security boundary. A timeout kills the direct process, not necessarily its descendants.
 - Experimental M2 caching is opt-in; writers are serialized per project, but dependency versions are not pinned and arbitrary commands are not guaranteed deterministic.
 - Source bytes are copied into the object store before a task runs. This records the bytes used, but does not establish authenticity of external data or prevent a malicious command from affecting the host.

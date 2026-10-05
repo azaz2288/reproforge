@@ -1,5 +1,10 @@
 # Progress
 
+## 2026-10-06 — v0.4.1 object publication integrity
+- Two regressions first proved invalid changed-source bytes were exposed briefly under a trusted digest, and publication used replacement rather than immutable create.
+- Verify completed temporary bytes/hash/size before exclusive hard-link publication; fsync new temporary objects. Existing/concurrent objects are verified, never overwritten or removed by this operation. Failure cleans only its own temporary file.
+-31 local tests passed, including source mutation, valid/damaged concurrent publisher and publication I/O failure. Trusted local filesystem and hard-link support required; no crash-directory-durability or malicious-race sandbox claim. Wheel/remote CI are separate checks.
+
 ## 2026-09-30
 - Selected ReproForge: a local-first, auditable research/data pipeline platform.
 - Wrote `PROJECT_PLAN.md` with user scenarios, architecture, five milestones, acceptance criteria, risks and truthful scope boundaries.

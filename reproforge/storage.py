@@ -28,7 +28,7 @@ def hash_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _atomic_copy(source: Path, target: Path) -> None:
+def _atomic_copy(source: Path, target: Path, expected: tuple[str, int]) -> None:
     temporary: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,18 @@ def _atomic_copy(source: Path, target: Path) -> None:
             temporary = Path(stream.name)
             with source.open("rb") as input_stream:
                 shutil.copyfileobj(input_stream, stream, length=1024 * 1024)
-        os.replace(temporary, target)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Never expose wrong bytes at an immutable digest, even briefly.
+        if hash_file(temporary) != expected:
+            raise StorageError(f"Source changed while storing object: {source}")
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            # Another writer may have published it. Do not overwrite or unlink
+            # that writer's object; validate it as an ordinary existing object.
+            if target.is_symlink() or not target.is_file() or hash_file(target) != expected:
+                raise StorageError(f"Corrupt concurrent object: {target.name}")
     except OSError as exc:
         raise StorageError(f"Cannot store {source}: {exc}") from exc
     finally:
@@ -89,11 +100,7 @@ class Store:
             if actual != digest or actual_size != size:
                 raise StorageError(f"Corrupt existing object: {digest}")
         else:
-            _atomic_copy(source, target)
-            actual, actual_size = hash_file(target)
-            if actual != digest or actual_size != size:
-                target.unlink(missing_ok=True)
-                raise StorageError(f"Source changed while storing object: {source}")
+            _atomic_copy(source, target, (digest, size))
         return {"sha256": digest, "size": size}
 
     def check(self, reference: Any) -> list[str]:
