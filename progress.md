@@ -1,5 +1,10 @@
 # Progress
 
+## 2026-10-06 — v0.4.2 checkpoint sync and fault recovery
+- Initial 8 fault tests:3 failures for missing file sync/order/error propagation, then flush/fsync-before-replace implemented. Serialization/sync/publish failures preserve old complete ledger; initial sync failure publishes nothing. Cache remains unpublished if final success checkpoint fails.
+- Actual synthetic executor exits abruptly after first task checkpoint; OS lock releases, CLI recover is idempotent, new CLI run resumes verified first task and executes second, original recovered ledger unchanged and final output independently verified. Another final-publication fault after all tasks verifies no cache and safe recovery/resume of both completed tasks. Generated temporary project only; no user pipelines/data touched.
+- Full39-test source suite passed locally, including existing31 and8 newfault cases, compile/diff checks passed. Installed wheel acceptance is recorded in portfolio maintenance evidence. File fsync is not directory/power-loss durability; timeout still kills only direct process, trusted commands only, external side effects not undone. Browser UI unchanged; CLI/source/installed recovery validation applies to this stage. Exact final SHA and same-SHA CI recorded outside repo, not recursive evidence-only commits.
+
 ## 2026-10-06 — v0.4.1 object publication integrity
 - Two regressions first proved invalid changed-source bytes were exposed briefly under a trusted digest, and publication used replacement rather than immutable create.
 - Verify completed temporary bytes/hash/size before exclusive hard-link publication; fsync new temporary objects. Existing/concurrent objects are verified, never overwritten or removed by this operation. Failure cleans only its own temporary file.

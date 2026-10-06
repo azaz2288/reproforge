@@ -29,3 +29,4 @@ jobs:
           cd "$RUNNER_TEMP"
           reproforge --help
           python -c "import reproforge; assert 'site-packages' in reproforge.__file__"
+          python -I -m unittest discover -s "$GITHUB_WORKSPACE/tests" -p test_recovery_faults.py -v

@@ -1,5 +1,7 @@
 # Findings
 
+- v0.4.2 review found atomic_json closed temporary bytes then replaced without file fsync. Three directed sync-fault/order tests failed before repair; partial-write/replace/NaN old-checkpoint protection and existing actual checkpoint-boundary recovery already passed. Added true os._exit executor test rather than claiming synthetic edited status proves real death recovery. No active child task at that boundary, so this does not fix timeout descendants or mid-task rollback.
+
 - Existing portfolio has several small, useful tools but no unified execution/provenance platform. A local-first auditable pipeline engine is a distinct, practical flagship theme.
 - Chronoguard and CSV Quality Gate may later be integrated as policy adapters; M1 must stand alone and have a useful vertical slice.
 - Project-root-relative paths and explicit source/dependency contracts make provenance testable; they do not create an OS security boundary.

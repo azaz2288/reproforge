@@ -45,6 +45,14 @@ This is **not** a hermetic build cache. The engine cannot detect undeclared file
 
 ## Limits
 
+v0.4.2 flushes and fsyncs complete temporary JSON before atomically replacing a run/gate/cache checkpoint. Serialization, sync or replacement failure preserves the previous checkpoint (or no initial record); no successful final ledger means no new cache publication. File sync is **not** a directory-fsync or power-loss guarantee. Inspect an incomplete run, then use `recover` and a new `run --resume` after independently verifying objects. External command side effects are not rolled back.
+
+Recovery fault tests now include an actual executor subprocess exiting with `os._exit` after its first successful checkpoint, OS writer-lock release, CLI recovery, and a new CLI run reusing only the verified prefix. They also test final-ledger publication failure after all tasks finish: no new cache, explicit recovery, both successful tasks reused, source ledger unchanged. These are generated temporary workflows, not hand-edited running-status fixtures, but do not certify mid-command kill/descendant termination, disk-full hardware, filesystem crash, or electrical power loss.
+
+```sh
+python -m unittest discover -s tests -p test_recovery_faults.py -v
+```
+
 v0.4.1 verifies a temporary object against the expected digest and size **before** publishing it, then uses an exclusive hard link instead of replacing an immutable object. Concurrent duplicate publication validates the existing object without overwriting or deleting it. Source mutation and I/O failure cannot expose invalid bytes under a trusted digest. This requires local filesystem hard-link support; failure is explicit, with no unsafe replacement fallback. File fsync is not a guarantee of directory-entry durability after power loss, and the store still assumes trusted local writers.
 
 - A task can still read other files, use the network or spawn child processes; the temporary directory is organizational isolation, not a security boundary. A timeout kills the direct process, not necessarily its descendants.

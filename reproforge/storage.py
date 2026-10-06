@@ -56,6 +56,11 @@ def _atomic_copy(source: Path, target: Path, expected: tuple[str, int]) -> None:
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
+    """Sync complete temporary bytes before replacing the prior checkpoint.
+
+    File sync is not directory-entry/power-loss durability. On write/sync/
+    publication failure the previous checkpoint remains the authority.
+    """
     temporary: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,6 +68,8 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             temporary = Path(stream.name)
             json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     except (OSError, ValueError) as exc:
         raise StorageError(f"Cannot write ledger {path}: {exc}") from exc
