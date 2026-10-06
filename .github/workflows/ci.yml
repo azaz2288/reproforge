@@ -21,6 +21,7 @@ jobs:
       - run: python -m reproforge run examples/hello_pipeline/project.json
       - run: python -m reproforge run examples/quality_pipeline/project.json
       - run: python -m benchmarks.quality_gate --rows 1000
+      - run: python -m examples.evidence_audit
       - run: python -m pip wheel --no-deps --wheel-dir dist .
       - name: Install and smoke-test CLI
         shell: bash
@@ -30,3 +31,6 @@ jobs:
           reproforge --help
           python -c "import reproforge; assert 'site-packages' in reproforge.__file__"
           python -I -m unittest discover -s "$GITHUB_WORKSPACE/tests" -p test_recovery_faults.py -v
+          python -I "$GITHUB_WORKSPACE/tests/test_evidence_json.py" -v
+          python -I "$GITHUB_WORKSPACE/examples/evidence_audit.py"
+          python -m pip check

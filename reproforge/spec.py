@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
+
+from .json_evidence import loads
 
 
 class SpecError(Exception):
@@ -206,8 +207,8 @@ def load_plan(path: Path) -> Plan:
     path = path.resolve()
     try:
         raw = path.read_bytes()
-        parsed = json.loads(raw)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        parsed = loads(raw)
+    except (OSError, UnicodeError, ValueError) as exc:
         raise SpecError(f"Cannot read project specification {path}: {exc}") from exc
     if not isinstance(parsed, dict) or set(parsed) != {"version", "tasks"} or type(parsed["version"]) is not int or parsed["version"] != 1:
         raise SpecError("Project specification must contain version=1 and tasks only")

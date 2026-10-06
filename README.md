@@ -45,6 +45,20 @@ This is **not** a hermetic build cache. The engine cannot detect undeclared file
 
 ## Limits
 
+v0.4.3 rejects ambiguous JSON across project specifications, run ledgers, cache indexes and their source ledgers, resume chains, and stored gate reports. Duplicate keys (including escaped names and nested objects), NaN/Infinity literals, float overflow and decoder nesting failures are controlled input errors, not last-value-wins evidence. Version and task exit-code fields require integers, not JSON booleans. Gate comparison distinguishes booleans from numbers recursively, even if someone rehashes the altered report object. This is internal-consistency validation, not authentication or a signature.
+
+`verify` and plan validation return exit 2 for malformed evidence; a well-formed but inconsistent gate/report returns exit 1. Cache corruption fails the new task instead of falling back silently; resume rejects an ambiguous source before creating a new ledger. `recover` skips malformed or unsupported records without rewriting their bytes, and the read-only dashboard omits these records. Dashboard visibility itself does not imply independent verification. Existing valid version-1 records remain supported; manually modified ambiguous records must be inspected externally or regenerated, not silently repaired. The decoder does not provide a file-size/memory quota or protection against all hostile local filesystem races.
+
+Run a self-contained **synthetic** example, using only a generated temporary project:
+
+```sh
+python -m examples.evidence_audit
+python -m examples.evidence_audit --serve --port 8891
+python -m unittest discover -s tests -p test_evidence_json.py -v
+```
+
+The demo verifies two successful runs and cache reuse, rejects a duplicate-status ledger, proves recovery preserves its bytes and the dashboard omits it. With `--serve`, a loopback-only demo dashboard stays available until interrupted; it never inspects your existing projects. The CLI still uses trusted commands and does not kill descendant processes on timeout.
+
 v0.4.2 flushes and fsyncs complete temporary JSON before atomically replacing a run/gate/cache checkpoint. Serialization, sync or replacement failure preserves the previous checkpoint (or no initial record); no successful final ledger means no new cache publication. File sync is **not** a directory-fsync or power-loss guarantee. Inspect an incomplete run, then use `recover` and a new `run --resume` after independently verifying objects. External command side effects are not rolled back.
 
 Recovery fault tests now include an actual executor subprocess exiting with `os._exit` after its first successful checkpoint, OS writer-lock release, CLI recovery, and a new CLI run reusing only the verified prefix. They also test final-ledger publication failure after all tasks finish: no new cache, explicit recovery, both successful tasks reused, source ledger unchanged. These are generated temporary workflows, not hand-edited running-status fixtures, but do not certify mid-command kill/descendant termination, disk-full hardware, filesystem crash, or electrical power loss.

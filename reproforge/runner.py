@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .gates import evaluate
+from .json_evidence import equal as equal_json, loads
 from .locking import project_lock
 from .spec import Plan, SpecError, Task
 from .storage import Store, StorageError, atomic_json
@@ -58,10 +59,10 @@ def _cache_hit(store: Store, key: str, task: Task, plan: Plan,
     if not path.exists():
         return None
     try:
-        cached = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        cached = loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
         raise StorageError(f"Cannot read cache index {path}: {exc}") from exc
-    if (not isinstance(cached, dict) or cached.get("version") != 1 or cached.get("key") != key
+    if (not isinstance(cached, dict) or type(cached.get("version")) is not int or cached.get("version") != 1 or cached.get("key") != key
             or not isinstance(cached.get("source_run_id"), str)
             or not isinstance(cached.get("outputs"), dict) or set(cached["outputs"]) != set(task.outputs)
             or not isinstance(cached.get("stdout"), dict) or not isinstance(cached.get("stderr"), dict)):
@@ -71,10 +72,10 @@ def _cache_hit(store: Store, key: str, task: Task, plan: Plan,
         raise StorageError(f"Malformed cache source run ID: {path}")
     source_path = store.runs / f"{source_id}.json"
     try:
-        source_run = json.loads(source_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        source_run = loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
         raise StorageError(f"Cannot read cache source run {source_id}: {exc}") from exc
-    if (not isinstance(source_run, dict) or source_run.get("version") != 1
+    if (not isinstance(source_run, dict) or type(source_run.get("version")) is not int or source_run.get("version") != 1
             or source_run.get("run_id") != source_id or source_run.get("status") != "success"
             or source_run.get("plan_sha256") != hashlib.sha256(plan.raw_bytes).hexdigest()
             or source_run.get("environment") != environment
@@ -82,7 +83,7 @@ def _cache_hit(store: Store, key: str, task: Task, plan: Plan,
         raise StorageError(f"Malformed cache source run: {source_id}")
     matching = [item for item in source_run.get("tasks", []) if isinstance(item, dict) and item.get("id") == task.id]
     if (len(matching) != 1 or matching[0].get("status") != "success"
-            or matching[0].get("returncode") != 0 or matching[0].get("command") != list(task.command)
+            or type(matching[0].get("returncode")) is not int or matching[0].get("returncode") != 0 or matching[0].get("command") != list(task.command)
             or matching[0].get("inputs") != inputs or "cached_from" in matching[0]
             or matching[0].get("cache_key") != key or any(matching[0].get(field) != cached[field]
             for field in ("outputs", "stdout", "stderr"))):
@@ -228,7 +229,10 @@ def _execute_locked(plan: Plan, store: Store, reuse: bool, resume: str | None) -
         problems = verify(plan, resume)
         if problems:
             raise StorageError(f"Cannot resume run {resume}: {problems[0]}")
-        source = json.loads((store.runs / f"{resume}.json").read_text(encoding="utf-8"))
+        try:
+            source = loads((store.runs / f"{resume}.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise StorageError(f"Cannot read resume source run {resume}: {exc}") from exc
         if source.get("status") not in ("failed", "interrupted") or source.get("environment") != environment:
             raise StorageError("Resume source must be failed/interrupted with the same runtime environment")
         for candidate in source["tasks"]:
@@ -282,10 +286,11 @@ def recover(plan: Plan) -> list[str]:
             if path.is_symlink() or len(path.stem) != 32 or any(char not in "0123456789abcdef" for char in path.stem):
                 continue
             try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
+                record = loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError):
                 continue
-            if (not isinstance(record, dict) or record.get("run_id") != path.stem
+            if (not isinstance(record, dict) or type(record.get("version")) is not int
+                    or record.get("version") != 1 or record.get("run_id") != path.stem
                     or record.get("plan_sha256") != hashlib.sha256(plan.raw_bytes).hexdigest()
                     or record.get("status") != "running"):
                 continue
@@ -310,10 +315,10 @@ def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list
     if path.is_symlink():
         raise StorageError(f"Run ledger is a symbolic link: {run_id}")
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        record = loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
         raise StorageError(f"Cannot read run {run_id}: {exc}") from exc
-    if not isinstance(record, dict) or record.get("version") != 1 or record.get("run_id") != run_id or not isinstance(record.get("tasks"), list):
+    if not isinstance(record, dict) or type(record.get("version")) is not int or record.get("version") != 1 or record.get("run_id") != run_id or not isinstance(record.get("tasks"), list):
         raise StorageError("Malformed or unsupported run record")
     issues = []
     if record.get("plan_sha256") != hashlib.sha256(plan.raw_bytes).hexdigest():
@@ -332,6 +337,8 @@ def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list
             issues.append(f"Task {index + 1} does not match the plan")
         if entry.get("status") not in ("success", "failed", "timeout"):
             issues.append(f"{task.id}: invalid task status")
+        if "returncode" in entry and entry['returncode'] is not None and type(entry['returncode']) is not int:
+            issues.append(f"{task.id}: exit code must be an integer or null")
         if entry.get("status") == "success" and entry.get("returncode") != 0:
             issues.append(f"{task.id}: successful task has a nonzero or missing exit code")
         if entry.get("status") == "timeout" and entry.get("returncode") is not None:
@@ -380,10 +387,10 @@ def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list
                     store.materialize(inputs[0]["object"], gate_input)
                     expected = evaluate(task.gate, gate_workspace)
                 try:
-                    actual = json.loads(store.object_path(report_ref["sha256"]).read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    actual = loads(store.object_path(report_ref["sha256"]).read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
                     raise StorageError(f"Cannot read gate report for {task.id}: {exc}") from exc
-                if actual != expected:
+                if not equal_json(actual, expected):
                     issues.append(f"{task.id}: gate report differs from independently evaluated input")
                 if (entry.get("status") == "success") != expected["passed"]:
                     issues.append(f"{task.id}: gate status differs from report")
@@ -410,20 +417,20 @@ def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list
             else:
                 source_path = store.runs / f"{source_id}.json"
                 try:
-                    source_record = json.loads(source_path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    source_record = loads(source_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
                     raise StorageError(f"Cannot read cache source run {source_id}: {exc}") from exc
                 if not isinstance(source_record, dict) or not isinstance(source_record.get("tasks"), list):
                     issues.append(f"{task.id}: malformed cache source run")
                     continue
                 source_entries = source_record["tasks"]
                 candidates = [item for item in source_entries if isinstance(item, dict) and item.get("id") == task.id]
-                if (source_record.get("version") != 1 or source_record.get("run_id") != source_id
+                if (type(source_record.get("version")) is not int or source_record.get("version") != 1 or source_record.get("run_id") != source_id
                         or source_record.get("status") != "success"
                         or source_record.get("plan_sha256") != record.get("plan_sha256")
                         or source_record.get("environment") != environment
                         or len(candidates) != 1 or candidates[0].get("status") != "success"
-                        or candidates[0].get("returncode") != 0
+                        or type(candidates[0].get("returncode")) is not int or candidates[0].get("returncode") != 0
                         or candidates[0].get("inputs") != inputs
                         or "cached_from" in candidates[0]
                         or candidates[0].get("cache_key") != entry.get("cache_key")
@@ -436,8 +443,8 @@ def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list
                 issues.append(f"{task.id}: invalid resume source run ID")
             else:
                 try:
-                    source_record = json.loads((store.runs / f"{source_id}.json").read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    source_record = loads((store.runs / f"{source_id}.json").read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
                     raise StorageError(f"Cannot read resume source run {source_id}: {exc}") from exc
                 source_tasks = source_record.get("tasks") if isinstance(source_record, dict) else None
                 source_entry = source_tasks[index] if isinstance(source_tasks, list) and index < len(source_tasks) else None
@@ -448,7 +455,7 @@ def verify(plan: Plan, run_id: str, _seen: frozenset[str] = frozenset()) -> list
                         or source_record.get("environment") != environment
                         or not isinstance(source_entry, dict) or source_entry.get("id") != task.id
                         or source_entry.get("status") != "success"
-                        or source_entry.get("returncode") != 0
+                        or type(source_entry.get("returncode")) is not int or source_entry.get("returncode") != 0
                         or source_entry.get("command") != list(task.command)
                         or any(source_entry.get(field) != entry.get(field)
                                for field in ("inputs", "outputs", "stdout", "stderr"))):

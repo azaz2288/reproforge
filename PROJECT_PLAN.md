@@ -77,4 +77,6 @@ project.json ──validate──> DAG/topological plan
 
 ## 目前状态
 
+2026-10-06 v0.4.3工程增量：spec/ledger/cache/续跑来源/gate共享严格JSON解析，拒绝重复键、非有限数和受控深嵌套错误；版本与exitcode拒绝bool冒充int，gate独立比较保留类型。recover不改写歧义ledger，dashboard不展示它；14新边界方法、合法中文/BOM/cache/resume、真实HTTP与浏览器合成页面验收。此为证据格式加固，不是签名认证、JSON容量限制、多用户权限或timeout子进程终止；M2–M5整体仍未完成。
+
 企划已确定；M1 的最小端到端版本已发布且通过 Windows/Linux CI。M2 已有双重显式启用缓存、单项目写入锁、中断账本标记及验证后复用成功前缀的续跑；M3 已有两种内置 CSV 门禁与独立验证；M4 已有本机只读运行界面的初版。M5 已有可复现的合成数据基准、恢复文档和使用 UCI Iris 的真实公开数据案例。M2 的更完整环境捕获和中断任务内部恢复，M3 的通用插件接口，M4 的多用户权限模型以及 M5 的多 GB 规模验证仍未完成。不提前宣称整个平台完成。

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import html
-import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .spec import Plan
+from .json_evidence import loads
 
 
 RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -28,10 +28,11 @@ def _records(root: Path) -> dict[str, dict]:
         if not RUN_ID.fullmatch(path.stem) or path.is_symlink():
             continue
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            record = loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
             continue
-        if isinstance(record, dict) and record.get("run_id") == path.stem:
+        if (isinstance(record, dict) and type(record.get('version')) is int
+                and record.get('version') == 1 and record.get("run_id") == path.stem):
             result[path.stem] = record
     return result
 

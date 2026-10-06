@@ -4,6 +4,7 @@
 Implement the project plan in `PROJECT_PLAN.md`, starting with a reliable M1 execution kernel. Do not claim later milestones complete or fabricate effort.
 
 ## Current phase
+2026-10-06 v0.4.3: unambiguous JSON evidence and type-aware gate audit. Initial 10 regression methods produced 16 subtest failures on the old code; shared strict decoder, integer metadata and gate equality fixed them. Expanded14 boundaries plus full53 source tests pass; synthetic demo/actual HTTP/browser filtering and compare pass. Isolated installed wheel/-I14 boundaries/console/version/pipcheck passed; exact remote SHA and same-SHA CI evidence recorded in workspace maintenance report after publication. Do not claim process-tree cleanup or all M2/M5 complete.
 2026-10-06 v0.4.2: checkpoint file-sync-before-replace and actual subprocess-exit recovery acceptance. Initial 8 fault tests had 3 failures proving missing sync; implement flush/fsync without changing existing object publication or timeout descendant limits. Validate full suite, installed fault tests, package/remote exact SHA/CI separately. No full M2/M5 completion claim.
 M2 verified-prefix resume implementation complete locally; release verification in progress. Remaining plan scope stays explicit.
 
@@ -33,6 +34,7 @@ M2 verified-prefix resume implementation complete locally; release verification 
 | No security-sandbox claim | Subprocesses retain user privileges despite working-directory isolation. |
 
 ## Errors
+- Initial16 failures were real accepted ambiguous evidence / bool-int coercion, not missing new APIs. Nonfinite unknown task fields already failed schema validation before this patch; that case is retention coverage, not a newly fixed bypass. A source filename lookup guessed engine.py, but inventory shows runner.py; switched to the existing file. Synthetic browser demo terminated with Ctrl-C via PowerShell session exit1 (intentional stop, not a test failure); check listener shutdown separately.
 | Error | Attempt | Resolution |
 |---|---:|---|
 | `git status` reported “not a git repository” after the first local wheel build | 1 | Expected before repository initialization; initialize only after code/tests are reviewed. |
